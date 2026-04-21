@@ -80,5 +80,6 @@ npm run dev
 4. If the agent is reading a long story and you want to change topics, simply talk over it! It'll instantly stop and listen to you.
 
 ## System Notes
+- **Performance Logs:** The console automatically prints highly detailed latency metrics for every turn, including Speech-to-Text (STT) duration, LLM Time-to-First-Token (TTFT), and exactly how long each sentence takes to run through edge-TTS. This is very useful to measure the real-time interaction latency.
 - **GPU Acceleration:** STT uses Whisper. If you have an NVIDIA card with correctly installed CUDA packages, Whisper will leverage FP16 operations for incredibly fast transcriptions. Without it, you may see `FP16 is not supported on CPU` — the STT will still run accurately, just slightly slower.
 - **Emoji Filtering:** The agent is smart enough to strip markdown formatting (`*smiles*`) and text emojis before passing them to the TTS engine, ensuring a natural robotic voice without spelled-out symbols.

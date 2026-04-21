@@ -2,6 +2,7 @@ import asyncio
 import base64
 import re
 import os
+import time
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,10 +36,14 @@ async def process_audio_pipeline(ws: WebSocket, audio_buffer: bytes):
     """
     print("Processing audio...")
 
+    pipeline_start = time.time()
+
     # 1. Speech-to-Text
     try:
+        stt_start = time.time()
         text = await asyncio.to_thread(transcribe_audio, audio_buffer)
-        print(f"📝 User: {text}")
+        stt_end = time.time()
+        print(f"📝 User: {text} [STT Time: {stt_end - stt_start:.2f}s]")
     except Exception as e:
         print(f"[STT Error] {e}")
         return
@@ -50,6 +55,8 @@ async def process_audio_pipeline(ws: WebSocket, audio_buffer: bytes):
     # 2. LLM (streaming) -> TTS (incremental)
     token_buffer = ""
     sentence_index = 0
+    llm_start_time = time.time()
+    llm_first_token_time = None
 
     try:
         # Note: generate_response_stream is a sync generator,
@@ -62,6 +69,9 @@ async def process_audio_pipeline(ws: WebSocket, audio_buffer: bytes):
         # Since standard `asyncio.sleep(0)` checks cancellation, we'll iterate with to_thread
         # Fully asynchronous iteration allows simultaneous INTERRUPT processing
         async for token in generate_response_stream(text):
+            if llm_first_token_time is None:
+                llm_first_token_time = time.time()
+                print(f"⏱️ LLM Time-to-First-Token: {llm_first_token_time - llm_start_time:.2f}s")
 
             token_buffer += token
             sentences = split_into_sentences(token_buffer)
@@ -70,9 +80,12 @@ async def process_audio_pipeline(ws: WebSocket, audio_buffer: bytes):
                 # All but the last fragment are complete sentences
                 for sentence in sentences[:-1]:
                     sentence_index += 1
-                    print(f"  [LLM→TTS] Sentence {sentence_index}: {sentence}")
-
+                    
+                    tts_start = time.time()
                     audio_path = await text_to_speech(sentence)
+                    tts_end = time.time()
+                    
+                    print(f"  [LLM→TTS] Sentence {sentence_index}: {sentence} [TTS: {tts_end - tts_start:.2f}s]")
 
                     if audio_path:
                         with open(audio_path, "rb") as f:
@@ -95,9 +108,12 @@ async def process_audio_pipeline(ws: WebSocket, audio_buffer: bytes):
         # Flush remaining text
         if token_buffer.strip():
             sentence_index += 1
-            print(f"  [LLM→TTS] Sentence {sentence_index} (final): {token_buffer.strip()}")
-
+            
+            tts_start = time.time()
             audio_path = await text_to_speech(token_buffer.strip())
+            tts_end = time.time()
+            
+            print(f"  [LLM→TTS] Sentence {sentence_index} (final): {token_buffer.strip()} [TTS: {tts_end - tts_start:.2f}s]")
 
             if audio_path:
                 with open(audio_path, "rb") as f:
