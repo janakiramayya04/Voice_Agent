@@ -23,7 +23,7 @@ const VoiceRecorder = () => {
   const mediaRecorderRef = useRef(null);
   const audioChunks = useRef([]);
   const socketRef = useRef(null);
-  
+
   // VAD refs
   const audioCtxRef = useRef(null);
   const analyserRef = useRef(null);
@@ -40,7 +40,7 @@ const VoiceRecorder = () => {
   // Forward declarations using refs for accurate state reading
   const startRecordingCycle = () => {
     if (!streamRef.current || !isActiveRef.current) return;
-    
+
     // We only listen if NOT currently processing or speaking
     if (statusRef.current === "processing" || statusRef.current === "speaking") return;
 
@@ -51,9 +51,10 @@ const VoiceRecorder = () => {
     const mediaRecorder = new MediaRecorder(streamRef.current);
     mediaRecorderRef.current = mediaRecorder;
 
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        audioChunks.current.push(event.data);
+    mediaRecorder.ondataavailable = async (event) => {
+      if (event.data.size > 0 && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        const buffer = await event.data.arrayBuffer();
+        socketRef.current.send(buffer);
       }
     };
 
@@ -61,16 +62,12 @@ const VoiceRecorder = () => {
       // Don't send STOP if we were manually canceled/interrupted and moved out of listening early
       if (statusRef.current !== "processing") return;
 
-      const blob = new Blob(audioChunks.current, { type: "audio/webm" });
-      const arrayBuffer = await blob.arrayBuffer();
-
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        socketRef.current.send(arrayBuffer);
         socketRef.current.send("STOP");
       }
     };
 
-    mediaRecorder.start();
+    mediaRecorder.start(500);
   };
 
   const interruptAgent = () => {
@@ -92,7 +89,7 @@ const VoiceRecorder = () => {
 
     // 4. Force state to idle temporarily so we can restart cleanly
     setStatus("idle");
-    
+
     // 5. Jump back to listening
     startRecordingCycle();
   };
@@ -147,13 +144,13 @@ const VoiceRecorder = () => {
     }
   };
 
-  const stopAgent = () => {
+  const stopAgent = useCallback(() => {
     setIsActive(false);
     setStatus("idle");
-    
+
     cancelAnimationFrame(animRef.current);
     clearTimeout(silenceTimerRef.current);
-    
+
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
@@ -162,14 +159,14 @@ const VoiceRecorder = () => {
       streamRef.current = null;
     }
     if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current.close().catch(() => { });
       audioCtxRef.current = null;
     }
     if (socketRef.current) {
       socketRef.current.close();
       socketRef.current = null;
     }
-    
+
     if (currentAudioElRef.current) {
       currentAudioElRef.current.pause();
       currentAudioElRef.current = null;
@@ -179,11 +176,22 @@ const VoiceRecorder = () => {
     isPlayingRef.current = false;
     hadSpeechRef.current = false;
     setVolume(0);
-  };
+  }, []);
 
   const initWebSocket = () => {
     if (!socketRef.current || socketRef.current.readyState === WebSocket.CLOSED) {
       socketRef.current = new WebSocket("ws://localhost:8000/ws");
+      socketRef.current.onopen = () => {
+        console.log("✅ WebSocket connected");
+      };
+
+      socketRef.current.onerror = (err) => {
+        console.error("❌ WebSocket error", err);
+      };
+
+      socketRef.current.onclose = () => {
+        console.log("🔌 WebSocket closed");
+      };
       socketRef.current.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
@@ -208,7 +216,7 @@ const VoiceRecorder = () => {
   const startAgent = async () => {
     setIsActive(true);
     initWebSocket();
-    
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -219,13 +227,13 @@ const VoiceRecorder = () => {
       analyser.fftSize = 256;
       const src = ctx.createMediaStreamSource(stream);
       src.connect(analyser);
-      
+
       audioCtxRef.current = ctx;
       analyserRef.current = analyser;
 
       startRecordingCycle();
       startVADLoop(analyser);
-      
+
     } catch (err) {
       console.error("Microphone access denied:", err);
       setIsActive(false);
@@ -252,18 +260,18 @@ const VoiceRecorder = () => {
             hadSpeechRef.current = true;
           }
         } else if (hadSpeechRef.current && !silenceTimerRef.current) {
-           silenceTimerRef.current = setTimeout(() => {
-             silenceTimerRef.current = null;
-             hadSpeechRef.current = false;
-             
-             // Move to processing
-             setStatus("processing");
-             if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-               mediaRecorderRef.current.stop();
-             }
-           }, SILENCE_DURATION);
+          silenceTimerRef.current = setTimeout(() => {
+            silenceTimerRef.current = null;
+            hadSpeechRef.current = false;
+
+            // Move to processing
+            setStatus("processing");
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+              mediaRecorderRef.current.stop();
+            }
+          }, SILENCE_DURATION);
         }
-      } 
+      }
       else if (statusRef.current === "processing" || statusRef.current === "speaking") {
         // Interruption logic!
         if (isLoud) {
@@ -300,8 +308,8 @@ const VoiceRecorder = () => {
 
   // Ensure VAD loop can see the current status using a dataset hack to bypass stale closures
   return (
-    <div 
-      id="status-tracker" 
+    <div
+      id="status-tracker"
       data-status={status}
       style={{
         display: "flex",
@@ -363,11 +371,11 @@ const VoiceRecorder = () => {
           alignItems: "center",
           justifyContent: "center",
           transition: "all 0.3s ease",
-          background: isActive 
-            ? "linear-gradient(135deg, #ef4444, #dc2626)" 
+          background: isActive
+            ? "linear-gradient(135deg, #ef4444, #dc2626)"
             : "linear-gradient(135deg, #10b981, #059669)",
-          boxShadow: isActive 
-            ? "0 0 30px rgba(239,68,68,0.3)" 
+          boxShadow: isActive
+            ? "0 0 30px rgba(239,68,68,0.3)"
             : "0 0 40px rgba(16,185,129,0.3)",
           transform: (status === "listening" && volume > SPEECH_THRESHOLD) ? "scale(1.1)" : "scale(1)",
         }}
@@ -377,12 +385,12 @@ const VoiceRecorder = () => {
 
       {/* Visualizer ring when listening */}
       <div style={{
-          marginTop: "20px",
-          width: "150px",
-          height: "4px",
-          background: "rgba(255,255,255,0.1)",
-          borderRadius: "2px",
-          overflow: "hidden"
+        marginTop: "20px",
+        width: "150px",
+        height: "4px",
+        background: "rgba(255,255,255,0.1)",
+        borderRadius: "2px",
+        overflow: "hidden"
       }}>
         <div style={{
           height: "100%",
